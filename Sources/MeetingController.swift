@@ -43,6 +43,8 @@ final class MeetingController: ObservableObject {
     private var dismissedCallApps = Set<String>()
     private var dismissedEvents = Set<String>()
     private var active: ActiveMeeting?
+    private var retentionTimer: Timer?
+    private var retentionObservers: [NSObjectProtocol] = []
 
     private struct ActiveMeeting {
         let id: UUID
@@ -69,12 +71,14 @@ final class MeetingController: ObservableObject {
     /// Called once by AppState after launch.
     func start() {
         if settings.enabled { activate() }
+        startAudioRetention()
     }
 
     // MARK: Settings
 
     private func settingsChanged(from old: MeetingSettings) {
         settings.save(to: .standard)
+        if settings.deleteAudioAfterDay && !old.deleteAudioAfterDay { runAudioRetention() }
         if settings.enabled != old.enabled {
             settings.enabled ? activate() : deactivate()
         } else if settings.enabled && (settings.deviceType != old.deviceType || settings.deviceLabel != old.deviceLabel || settings.syncChannelID != old.syncChannelID || settings.reminderLeadMinutes != old.reminderLeadMinutes) {
@@ -167,6 +171,64 @@ final class MeetingController: ObservableObject {
     func openPrivacySettings(_ anchor: String) {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(anchor)") {
             NSWorkspace.shared.open(url)
+        }
+    }
+
+    // MARK: Audio retention ("Delete meeting audio after the day")
+
+    /// Runs a pass now (launch), at each local midnight, on wake and when the day changes.
+    private func startAudioRetention() {
+        runAudioRetention()
+        scheduleMidnightRetention()
+        let wake = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.runAudioRetention(); self?.scheduleMidnightRetention() }
+        }
+        let dayChanged = NotificationCenter.default.addObserver(forName: .NSCalendarDayChanged, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.runAudioRetention(); self?.scheduleMidnightRetention() }
+        }
+        retentionObservers = [wake, dayChanged]
+    }
+
+    private func scheduleMidnightRetention() {
+        retentionTimer?.invalidate()
+        // A few seconds past midnight so the new day has clearly begun.
+        let fireAt = MeetingAudioRetention.nextMidnight(after: Date()).addingTimeInterval(5)
+        let timer = Timer(fire: fireAt, interval: 0, repeats: false) { [weak self] _ in
+            Task { @MainActor in self?.runAudioRetention(); self?.scheduleMidnightRetention() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        retentionTimer = timer
+    }
+
+    /// Deletes audio of finished meetings from previous days. Audio whose transcription or Slack upload
+    /// has not succeeded is kept and that step is retried; the meeting in progress is never touched.
+    func runAudioRetention(now: Date = Date(), retryPending: Bool = true) {
+        guard settings.deleteAudioAfterDay, let appState else { return }
+        let inProgress = Set([active?.id].compactMap { $0 })
+        var retryTranscription: [HistoryItem] = []
+        var retryUploads: [HistoryItem] = []
+        for item in appState.entries {
+            guard let candidate = item.audioRetentionCandidate else { continue } // Fn dictation: unchanged
+            switch MeetingAudioRetention.decide(candidate, now: now, inProgressIDs: inProgress) {
+            case .keep: break
+            case .delete:
+                for name in MeetingAudioRetention.audioFilenames(forAudioFilename: item.audioFilename) {
+                    try? FileManager.default.removeItem(at: AppState.recordingsDirectory.appendingPathComponent(name))
+                }
+                appState.updateMeetingEntry(item.id) { $0.meeting?.audioDeletedAt = now }
+            case .pendingTranscription:
+                if item.state == "Failed" { retryTranscription.append(item) }
+            case .pendingUpload:
+                retryUploads.append(item)
+            }
+        }
+        // Retry pending steps once per pass (launch, midnight, wake), only when Meetings is set up for them.
+        guard retryPending, settings.enabled else { return }
+        if appState.transcriptionAPIKey != nil {
+            for item in retryTranscription { retry(item) }
+        }
+        if SlackKeychain.load() != nil, !settings.trimmedMeetingsChannel.isEmpty {
+            for item in retryUploads { retryUpload(item) }
         }
     }
 
@@ -523,6 +585,7 @@ final class MeetingController: ObservableObject {
             _ = try await SlackClient(token: token).uploadFile(channelID: settings.trimmedMeetingsChannel, filename: filename, title: info.title, data: data, initialComment: comment)
             setSlack(id, posted: true, status: "Posted to Slack \(Date().formatted(date: .abbreviated, time: .shortened)).")
             message = "Posted \(info.title) to Slack."
+            runAudioRetention(retryPending: false)
         } catch {
             setSlack(id, posted: false, status: "Slack upload failed: \(error.localizedDescription)")
             message = "Transcript saved, but the Slack upload failed. Retry from History."

@@ -23,6 +23,8 @@ struct MeetingSettings: Equatable {
     var deviceType: MeetingDeviceType = .personal
     var deviceLabel = MeetingDeviceType.personal.defaultLabel
     var reminderLeadMinutes = 5
+    /// Delete meeting audio once the day it was recorded is over (transcripts are kept). Default on.
+    var deleteAudioAfterDay = true
 
     private enum Key {
         static let enabled = "meetings.enabled"
@@ -31,6 +33,7 @@ struct MeetingSettings: Equatable {
         static let deviceType = "meetings.deviceType"
         static let deviceLabel = "meetings.deviceLabel"
         static let reminderLead = "meetings.reminderLeadMinutes"
+        static let deleteAudio = "meetings.deleteAudioAfterDay"
     }
 
     static func load(from defaults: UserDefaults) -> MeetingSettings {
@@ -43,6 +46,9 @@ struct MeetingSettings: Equatable {
         if defaults.object(forKey: Key.reminderLead) != nil {
             settings.reminderLeadMinutes = max(0, min(60, defaults.integer(forKey: Key.reminderLead)))
         }
+        if defaults.object(forKey: Key.deleteAudio) != nil {
+            settings.deleteAudioAfterDay = defaults.bool(forKey: Key.deleteAudio)
+        }
         return settings
     }
 
@@ -53,6 +59,7 @@ struct MeetingSettings: Equatable {
         defaults.set(deviceType.rawValue, forKey: Key.deviceType)
         defaults.set(deviceLabel, forKey: Key.deviceLabel)
         defaults.set(reminderLeadMinutes, forKey: Key.reminderLead)
+        defaults.set(deleteAudioAfterDay, forKey: Key.deleteAudio)
     }
 
     var trimmedMeetingsChannel: String { meetingsChannelID.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -252,6 +259,8 @@ struct MeetingHistoryInfo: Codable, Equatable {
     var jsonFilename: String?
     var slackPosted: Bool?
     var slackStatus: String?
+    /// Set when "Delete meeting audio after the day" removed the audio; the transcript is kept.
+    var audioDeletedAt: Date?
 }
 
 struct MeetingTranscriptPayload: Encodable {

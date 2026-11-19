@@ -11,16 +11,32 @@ LocalVoice is a lightweight, native macOS dictation app. Press **Fn** to start o
 
 ## Install from source
 
-This repository is private. You need collaborator access to clone it or download its source archive.
+The source lives in Parv's private repository, `https://github.com/Parvaggarwal01/localvoice`. You need access to it to clone.
 
 ```sh
-git clone https://github.com/kartik-py12/LocalVoice.git
+git clone https://github.com/Parvaggarwal01/localvoice.git LocalVoice
 cd LocalVoice
 ./Scripts/setup-signing.sh
 ./Scripts/build-app.sh
 ```
 
 Run `setup-signing.sh` once on each Mac. It creates a local signing identity in that Mac's login Keychain. Then `build-app.sh` compiles the app, installs it at `~/Applications/LocalVoice.app`, and opens it. For later updates, pull the latest code and rerun `./Scripts/build-app.sh`; it reuses the signing identity, restarts an idle app, and refuses to update while an audio file is open.
+
+## Install on a second Mac
+
+Each Mac builds and signs its own copy; nothing is copied between Macs except through Slack.
+
+1. Install Xcode Command Line Tools (`xcode-select --install`) and sign in to GitHub with access to the private repo.
+2. Clone and build:
+   ```sh
+   git clone https://github.com/Parvaggarwal01/localvoice.git LocalVoice
+   cd LocalVoice
+   ./Scripts/setup-signing.sh   # once per Mac: local signing identity in the login Keychain
+   ./Scripts/build-app.sh       # builds, installs ~/Applications/LocalVoice.app and opens it
+   ```
+3. Permissions (System Settings → Privacy & Security): **Microphone**, **Input Monitoring** (Fn), **Accessibility** (only for auto-paste), **Calendars**, **Screen & System Audio Recording** (other participants' audio; quit and reopen after allowing), and **Notifications**.
+4. In LocalVoice → **Settings**: paste the Deepgram API key. Under **Meetings**: switch on **Enable Meetings**, paste the Helm bot token (`xoxb-…`) and click **Save token**, enter the `#meetings` and `#meetings-sync` channel IDs (same IDs on both Macs), pick **Personal** or **Company** so the two Macs differ, then click **Test connection**.
+5. Add the Google account in **macOS Calendar** (System Settings → Internet Accounts → Google, with Calendars on) so this Mac's meetings appear in its agenda.
 
 ## First-run setup
 
@@ -65,7 +81,13 @@ Meetings mode records a whole call (your microphone **and** the other participan
    - **Screen & System Audio Recording** (Privacy & Security → Screen & System Audio Recording): needed to capture the other participants. Only audio is kept; no video is saved. Quit and reopen LocalVoice after turning it on. Without it, meetings are recorded from your microphone only and speakers are labelled by diarization.
    - **Microphone** and **Notifications**: allow when prompted.
 
-The Deepgram API key from the dictation setup is used for meetings too. Meeting audio and transcripts stay in `~/Library/Application Support/LocalVoice/Recordings/` until you delete them from History.
+The Deepgram API key from the dictation setup is used for meetings too. Meeting audio and transcripts are saved in `~/Library/Application Support/LocalVoice/Recordings/`.
+
+### Audio retention
+
+**Settings → Meetings → Delete meeting audio after the day** is on by default. Meeting audio from an earlier local day is deleted on launch, at local midnight and when the Mac wakes. The day that counts is the day the meeting ended. Transcripts (the History text and `meeting-<id>.json`) are kept until you delete them, and History marks those meetings *Audio deleted, transcript kept*.
+
+Audio is never deleted while its transcription or Slack upload has not succeeded: History shows *Audio kept: transcription pending* or *Slack upload pending*, and each pass retries that step. The meeting being recorded is never touched. Fn dictation audio is not affected. Turn the toggle off to keep all meeting audio.
 
 ## Build and test
 
@@ -95,6 +117,12 @@ swiftc -parse-as-library -swift-version 5 Sources/MeetingModels.swift Sources/Sl
 swiftc -parse-as-library -swift-version 5 -framework AVFoundation -framework ScreenCaptureKit -framework CoreMedia \
   Sources/MeetingModels.swift Sources/MeetingRecorder.swift Tests/MeetingAudioTests.swift -o /tmp/LocalVoice-audio-check
 /tmp/LocalVoice-audio-check
+```
+
+```sh
+# Meetings audio retention: day boundaries, pending transcription/upload, in-progress recordings
+swiftc -parse-as-library -swift-version 5 Sources/MeetingRetention.swift Tests/MeetingRetentionTests.swift -o /tmp/LocalVoice-retention-check
+/tmp/LocalVoice-retention-check
 ```
 
 `Tests/MeetingLiveCheck.swift` is an optional live check that sends about 15 seconds of synthesized speech to Deepgram; its header has the commands.

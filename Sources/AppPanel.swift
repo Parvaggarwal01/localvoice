@@ -490,6 +490,12 @@ struct AppPanel: View {
             Stepper("Reminder \(meetings.settings.reminderLeadMinutes) min before", value: $meetings.settings.reminderLeadMinutes, in: 0...60)
                 .font(.caption)
 
+            Toggle("Delete meeting audio after the day", isOn: $meetings.settings.deleteAudioAfterDay)
+            Text("Meeting audio from earlier days is deleted at midnight, on launch and on wake. Transcripts stay in History. Audio is kept until its transcript is saved and posted to Slack. Fn dictation audio is not affected.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
             Button(meetings.isTestingConnection ? "Testing…" : "Test connection") { meetings.testConnection() }
                 .buttonStyle(.borderedProminent)
                 .disabled(meetings.isTestingConnection || !meetings.slackTokenConfigured)
@@ -549,6 +555,7 @@ struct AppPanel: View {
 }
 
 private struct HistoryRow: View {
+    @EnvironmentObject private var meetings: MeetingController
     let item: HistoryItem
     let onOpen: () -> Void
 
@@ -561,7 +568,7 @@ private struct HistoryRow: View {
                     .frame(width: 32, height: 32)
                     .background(Color.accentColor.opacity(0.09), in: RoundedRectangle(cornerRadius: 10))
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(item.meeting.map { "Meeting · \($0.title) · \(item.createdAt.formatted(date: .abbreviated, time: .shortened))" } ?? item.createdAt.formatted(date: .abbreviated, time: .shortened))
+                    Text(item.meeting.map { "Meeting · \($0.title) · \(item.createdAt.formatted(date: .abbreviated, time: .shortened))\(item.meetingAudioNote(autoDelete: meetings.settings.deleteAudioAfterDay).map { " · " + $0 } ?? "")" } ?? item.createdAt.formatted(date: .abbreviated, time: .shortened))
                         .font(.caption2.weight(.medium))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -627,6 +634,11 @@ private struct HistoryDetailView: View {
                     }
                     Text(item.createdAt.formatted(date: .complete, time: .shortened))
                         .font(item.isMeeting ? .caption : .headline)
+                    if let note = current.meetingAudioNote(autoDelete: meetings.settings.deleteAudioAfterDay) {
+                        Label(note, systemImage: current.meeting?.audioDeletedAt != nil ? "speaker.slash" : "clock.arrow.circlepath")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                     Text(item.state == "Failed" ? (item.errorMessage ?? "Transcription failed") : item.state)
                         .font(.caption)
                         .foregroundStyle(.secondary)
