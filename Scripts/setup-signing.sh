@@ -37,7 +37,7 @@ cat "$TASK_TEMP_DIR/LocalVoice.cer" "$TASK_TEMP_DIR/LocalVoice.key" > "$TASK_TEM
 
 TASK_CERT_HASH="$(openssl x509 -in "$TASK_TEMP_DIR/LocalVoice.cer" -noout -fingerprint -sha1 | sed 's/.*=//; s/://g')"
 security import "$TASK_TEMP_DIR/LocalVoice.pem" -t agg -f pemseq -x -T /usr/bin/codesign -k "$LOGIN_KEYCHAIN"
-security add-trusted-cert -r trustRoot -p codeSign -a "$INSTALLED_APP" -k "$LOGIN_KEYCHAIN" "$TASK_TEMP_DIR/LocalVoice.cer"
+security add-trusted-cert -r trustRoot -p codeSign -k "$LOGIN_KEYCHAIN" "$TASK_TEMP_DIR/LocalVoice.cer"
 
 if ! security find-identity -p codesigning "$LOGIN_KEYCHAIN" | grep -Fq "\"$SIGNING_IDENTITY\""; then
     echo "The LocalVoice signing identity could not be validated." >&2
