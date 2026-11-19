@@ -3,7 +3,15 @@ set -euo pipefail
 umask 077
 
 PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-BUILD_DIR="$PROJECT_DIR/build"
+# --no-install: build and sign into BUILD_DIR only; never touch ~/Applications or a running app.
+NO_INSTALL=0
+for arg in "$@"; do
+    case "$arg" in
+        --no-install) NO_INSTALL=1 ;;
+        *) echo "Unknown option: $arg (supported: --no-install)" >&2; exit 2 ;;
+    esac
+done
+BUILD_DIR="${LOCALVOICE_BUILD_DIR:-$PROJECT_DIR/build}"
 APP="$BUILD_DIR/LocalVoice.app"
 INSTALL_DIR="$HOME/Applications"
 INSTALLED_APP="$INSTALL_DIR/LocalVoice.app"
@@ -23,6 +31,7 @@ iconutil -c icns "$BUILD_DIR/AppIcon.iconset" -o "$APP/Contents/Resources/AppIco
 
 swiftc -parse-as-library -swift-version 5 -O -target arm64-apple-macosx13.0 \
     -framework AppKit -framework SwiftUI -framework AVFoundation -framework CoreGraphics -framework Security \
+    -framework EventKit -framework ScreenCaptureKit -framework CoreAudio -framework CoreMedia -framework UserNotifications \
     "$PROJECT_DIR"/Sources/*.swift -o "$APP/Contents/MacOS/LocalVoice"
 
 cat > "$APP/Contents/Info.plist" <<'PLIST'
@@ -43,10 +52,26 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>NSHighResolutionCapable</key><true/>
     <key>NSMicrophoneUsageDescription</key>
     <string>LocalVoice records your speech when you start it and saves the audio on this Mac.</string>
+    <key>NSCalendarsUsageDescription</key>
+    <string>LocalVoice reads your calendars to offer recording when a meeting starts and to share your agenda with Helm.</string>
+    <key>NSCalendarsFullAccessUsageDescription</key>
+    <string>LocalVoice reads your calendars to offer recording when a meeting starts and to share your agenda with Helm.</string>
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>LocalVoice captures system audio during meetings you record so the other participants are in the transcript. No video is saved.</string>
 </dict>
 </plist>
 PLIST
 
+if [[ "$NO_INSTALL" == 1 ]]; then
+    if security find-identity -p codesigning "$LOGIN_KEYCHAIN" 2>/dev/null | grep -Fq "\"$SIGNING_IDENTITY\""; then
+        codesign --force --deep --sign "$SIGNING_IDENTITY" "$APP"
+    else
+        codesign --force --deep --sign - "$APP"
+        echo "Signed ad hoc (no local signing identity); macOS permissions will not persist for this build." >&2
+    fi
+    printf 'Built (not installed): %s\n' "$APP"
+    exit 0
+fi
 if ! security find-identity -p codesigning "$LOGIN_KEYCHAIN" | grep -Fq "\"$SIGNING_IDENTITY\""; then
     echo "Missing stable LocalVoice signing identity. Run ./Scripts/setup-signing.sh once, then rebuild." >&2
     exit 1
@@ -54,7 +79,7 @@ fi
 codesign --force --deep --sign "$SIGNING_IDENTITY" "$APP"
 running_pid="$(pgrep -x LocalVoice | head -n 1 || true)"
 if [[ -n "$running_pid" ]]; then
-    if lsof -p "$running_pid" 2>/dev/null | grep -E '\.m4a([[:space:]]|$)' >/dev/null; then
+    if lsof -p "$running_pid" 2>/dev/null | grep -E '\.(m4a|caf)([[:space:]]|$)' >/dev/null; then
         echo "LocalVoice has an audio file open. Stop recording or wait for transcription before updating; the installed app was not changed." >&2
         exit 1
     fi

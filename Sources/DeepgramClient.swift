@@ -29,6 +29,41 @@ enum DeepgramClient {
         return transcript
     }
 
+    /// Long sessions for meeting files (hours of audio): generous upload and processing timeouts.
+    private static let meetingSession: URLSession = {
+        let configuration = URLSessionConfiguration.default
+        configuration.timeoutIntervalForRequest = 900
+        configuration.timeoutIntervalForResource = 4 * 3600
+        return URLSession(configuration: configuration)
+    }()
+
+    /// Meeting transcription: each channel transcribed separately (left = me, right = others) and
+    /// diarized, with utterances. Returns Deepgram's raw JSON for DeepgramMeetingParser.
+    static func transcribeMeeting(fileURL: URL, apiKey: String, multichannel: Bool) async throws -> Data {
+        var components = URLComponents(string: "https://api.deepgram.com/v1/listen")!
+        components.queryItems = [
+            URLQueryItem(name: "model", value: "nova-3"),
+            URLQueryItem(name: "language", value: "multi"),
+            URLQueryItem(name: "smart_format", value: "true"),
+            URLQueryItem(name: "punctuate", value: "true"),
+            URLQueryItem(name: "diarize", value: "true"),
+            URLQueryItem(name: "utterances", value: "true"),
+            URLQueryItem(name: "multichannel", value: multichannel ? "true" : "false")
+        ]
+        var request = URLRequest(url: components.url!)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 900
+        request.setValue("Token \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("audio/mp4", forHTTPHeaderField: "Content-Type")
+        let (data, response) = try await meetingSession.upload(for: request, fromFile: fileURL)
+        guard let http = response as? HTTPURLResponse else { throw TranscriptionError.invalidResponse }
+        guard (200..<300).contains(http.statusCode) else {
+            let message = (try? JSONDecoder().decode(APIError.self, from: data).reason)
+            throw TranscriptionError.server(message ?? "Deepgram returned HTTP \(http.statusCode).")
+        }
+        return data
+    }
+
     static func fetchBalances(apiKey: String) async throws -> [DeepgramProjectBalance] {
         let projectsResponse: ProjectsResponse = try await get("https://api.deepgram.com/v1/projects", apiKey: apiKey)
         var balances: [DeepgramProjectBalance] = []

@@ -49,6 +49,7 @@ final class AppState: ObservableObject {
     private var activationObserver: NSObjectProtocol?
     private let hudController = RecordingHUDController()
     private let functionKeyMonitor = FunctionKeyMonitor()
+    let meetings = MeetingController()
 
     var trackedUsageEntries: [HistoryItem] {
         entries.filter { $0.state == "Ready" && $0.duration != nil }
@@ -73,6 +74,8 @@ final class AppState: ObservableObject {
             self.toggleRecording()
         }
         refreshFunctionKeyMonitor()
+        meetings.appState = self
+        meetings.start()
         activationObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didBecomeActiveNotification,
             object: nil,
@@ -220,11 +223,21 @@ final class AppState: ObservableObject {
     func delete(_ item: HistoryItem) {
         guard item.state != "Transcribing" && item.state != "Recording" else { return }
         try? FileManager.default.removeItem(at: item.audioURL)
+        if let meeting = item.meeting {
+            let base = item.audioURL.deletingPathExtension().lastPathComponent
+            for name in [meeting.jsonFilename, "\(base)-me.caf", "\(base)-others.caf"].compactMap({ $0 }) {
+                try? FileManager.default.removeItem(at: Self.recordingsDirectory.appendingPathComponent(name))
+            }
+        }
         entries.removeAll { $0.id == item.id }
         saveHistory()
     }
 
     func retry(_ item: HistoryItem) {
+        if item.isMeeting {
+            meetings.retry(item)
+            return
+        }
         guard !isStartingRecording && !isRecording && !isTranscribing else {
             statusMessage = "Finish the current recording or transcription before retrying."
             return
@@ -242,6 +255,7 @@ final class AppState: ObservableObject {
     }
 
     func stopForQuit() {
+        meetings.stopForQuit()
         guard isRecording else { return }
         stopRecording(shouldTranscribe: false)
     }
@@ -435,6 +449,19 @@ final class AppState: ObservableObject {
             return value.isEmpty ? nil : value
         }
         return nil
+    }
+
+    // MARK: Meetings hooks (MeetingController owns the meeting flow; Fn dictation is unchanged)
+
+    var transcriptionAPIKey: String? { deepgramAPIKey }
+
+    func addMeetingEntry(_ item: HistoryItem) {
+        entries.insert(item, at: 0)
+        saveHistory()
+    }
+
+    func updateMeetingEntry(_ id: UUID, change: (inout HistoryItem) -> Void) {
+        update(id, change: change)
     }
 
     private var deepgramBillingAPIKey: String? {

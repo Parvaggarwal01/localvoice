@@ -4,6 +4,7 @@ import SwiftUI
 
 private enum PanelSection: String, CaseIterable {
     case record = "Record"
+    case meetings = "Meetings"
     case history = "History"
     case usage = "Usage"
     case settings = "Settings"
@@ -11,6 +12,8 @@ private enum PanelSection: String, CaseIterable {
 
 struct AppPanel: View {
     @EnvironmentObject private var state: AppState
+    @EnvironmentObject private var meetings: MeetingController
+    @State private var slackTokenDraft = ""
     @State private var section: PanelSection = .record
     @State private var apiKeyDraft = ""
     @State private var billingKeyDraft = ""
@@ -39,6 +42,7 @@ struct AppPanel: View {
         .sheet(item: $selectedItem) { item in
             HistoryDetailView(item: item)
                 .environmentObject(state)
+                .environmentObject(meetings)
         }
         .onAppear { state.refreshFunctionKeyMonitor() }
     }
@@ -70,6 +74,7 @@ struct AppPanel: View {
     private var sectionContent: some View {
         switch section {
         case .record: recordSection
+        case .meetings: meetingsSection
         case .history: historySection
         case .usage: usageSection
         case .settings: settingsSection
@@ -338,6 +343,8 @@ struct AppPanel: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
+            meetingsSettingsCard
+
             settingCard(title: "Recognition", subtitle: "Deepgram Nova-3 with smart formatting and punctuation.", icon: "text.alignleft") {
                 Text("Multilingual mode supports English and Hindi speech, including switching between them.")
                     .font(.caption2)
@@ -351,6 +358,153 @@ struct AppPanel: View {
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(.top, 4)
+    }
+
+    // MARK: Meetings
+
+    private var meetingsSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            ZStack(alignment: .bottomLeading) {
+                RoundedRectangle(cornerRadius: 22)
+                    .fill(LinearGradient(colors: [Color(red: 0.62, green: 0.13, blue: 0.24), Color(red: 0.86, green: 0.25, blue: 0.30)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                VStack(alignment: .leading, spacing: 12) {
+                    Image(systemName: meetings.isRecording ? "record.circle" : "person.2.wave.2")
+                        .font(.system(size: 22, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.9))
+                    Text(meetings.isRecording ? (meetings.currentTitle ?? "Recording meeting") : meetings.isStarting ? "Starting…" : meetings.isProcessing ? "Transcribing meeting…" : "Record a meeting")
+                        .font(.system(size: 21, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.white)
+                        .lineLimit(2)
+                    if meetings.isRecording {
+                        Text("\(meetings.formatElapsed(meetings.elapsed)) · \(meetings.capturingSystemAudio ? "you + others" : "mic only")")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.white.opacity(0.85))
+                    }
+                    Button(action: meetings.toggleManual) {
+                        Label(meetings.isRecording ? "Stop and transcribe" : "Start meeting recording", systemImage: meetings.isRecording ? "stop.fill" : "record.circle")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(Color(red: 0.55, green: 0.12, blue: 0.20))
+                            .padding(.horizontal, 15)
+                            .padding(.vertical, 9)
+                            .background(.white, in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(meetings.isStarting)
+                }
+                .padding(20)
+            }
+            .frame(height: 190)
+
+            if let message = meetings.message {
+                Text(message).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+
+            if !meetings.settings.enabled {
+                Button { section = .settings } label: {
+                    Label("Turn on Meetings in Settings for calendar prompts and Slack", systemImage: "gearshape")
+                        .font(.subheadline.weight(.medium))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(14)
+                        .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 14))
+                }
+                .buttonStyle(.plain)
+            }
+
+            settingCard(title: "Permissions", subtitle: "Meetings needs these once on each Mac.", icon: "lock.shield") {
+                permissionRow("Calendar", granted: meetings.calendarAccess, action: meetings.requestCalendarAccess)
+                permissionRow("Screen & System Audio Recording", granted: meetings.screenCaptureAccess, action: meetings.requestScreenCaptureAccess)
+                Text("Screen & System Audio Recording lets LocalVoice hear the other participants. No video is saved. After allowing it, quit and reopen LocalVoice.")
+                    .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+
+            if meetings.settings.enabled {
+                HStack {
+                    Text("NEXT 36 HOURS").font(.system(size: 10, weight: .bold, design: .rounded)).tracking(1.1).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Refresh") { meetings.refreshAgenda() }.font(.caption.weight(.medium)).buttonStyle(.plain).foregroundStyle(Color.accentColor)
+                }
+                if meetings.upcoming.isEmpty {
+                    Text(meetings.calendarAccess ? "No meetings in your calendars." : "Allow Calendar access to see upcoming meetings.")
+                        .font(.subheadline).foregroundStyle(.secondary)
+                } else {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(meetings.upcoming.prefix(6)) { event in
+                            HStack(alignment: .top, spacing: 10) {
+                                Text(event.start.formatted(date: .omitted, time: .shortened))
+                                    .font(.caption.monospacedDigit().weight(.semibold))
+                                    .frame(width: 62, alignment: .leading)
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(event.title).font(.subheadline).lineLimit(1)
+                                    Text(event.account.isEmpty ? event.calendar : "\(event.calendar) · \(event.account)").font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                                }
+                            }
+                        }
+                    }
+                }
+                if let synced = meetings.lastAgendaSync {
+                    Text("Agenda synced to Slack \(synced.formatted(date: .omitted, time: .shortened)).").font(.caption2).foregroundStyle(.tertiary)
+                }
+                if let error = meetings.agendaSyncError {
+                    Text("Agenda sync: \(error)").font(.caption2).foregroundStyle(.orange)
+                }
+            }
+        }
+    }
+
+    private func permissionRow(_ name: String, granted: Bool, action: @escaping () -> Void) -> some View {
+        HStack {
+            Image(systemName: granted ? "checkmark.circle.fill" : "exclamationmark.circle")
+                .foregroundStyle(granted ? Color.green : Color.orange)
+            Text(name).font(.caption)
+            Spacer()
+            if !granted { Button("Allow", action: action).controlSize(.small) }
+        }
+    }
+
+    private var meetingsSettingsCard: some View {
+        settingCard(title: "Meetings", subtitle: meetings.settings.enabled ? "Calendar prompts, recording and Slack upload are on." : "Record meetings and send transcripts to Slack.", icon: "person.2.wave.2") {
+            Toggle("Enable Meetings", isOn: $meetings.settings.enabled)
+
+            Text("Slack bot token").font(.caption.weight(.semibold))
+            SecureField(meetings.slackTokenConfigured ? "Saved in Keychain — paste to replace" : "xoxb-… (Helm app bot token)", text: $slackTokenDraft)
+                .textFieldStyle(.roundedBorder)
+                .accessibilityLabel("Slack bot token")
+            HStack {
+                Button("Save token") { if meetings.saveSlackToken(slackTokenDraft) { slackTokenDraft = "" } }
+                    .disabled(slackTokenDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                if meetings.slackTokenConfigured {
+                    Button("Remove", role: .destructive) { meetings.removeSlackToken() }
+                }
+            }
+
+            labeledField("Meetings channel ID (#meetings)", text: $meetings.settings.meetingsChannelID, prompt: "C0123ABCD")
+            labeledField("Sync channel ID (#meetings-sync)", text: $meetings.settings.syncChannelID, prompt: "C0456EFGH")
+
+            Picker("This Mac", selection: Binding(get: { meetings.settings.deviceType }, set: { meetings.setDeviceType($0) })) {
+                Text("Personal").tag(MeetingDeviceType.personal)
+                Text("Company").tag(MeetingDeviceType.company)
+            }
+            .pickerStyle(.segmented)
+            labeledField("Device label", text: $meetings.settings.deviceLabel, prompt: meetings.settings.deviceType.defaultLabel)
+
+            Stepper("Reminder \(meetings.settings.reminderLeadMinutes) min before", value: $meetings.settings.reminderLeadMinutes, in: 0...60)
+                .font(.caption)
+
+            Button(meetings.isTestingConnection ? "Testing…" : "Test connection") { meetings.testConnection() }
+                .buttonStyle(.borderedProminent)
+                .disabled(meetings.isTestingConnection || !meetings.slackTokenConfigured)
+            Text(meetings.connectionMessage ?? "Test checks the token and posts this Mac’s agenda to the sync channel. Invite @Helm to both channels first.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func labeledField(_ title: String, text: Binding<String>, prompt: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title).font(.caption.weight(.semibold))
+            TextField(prompt, text: text).textFieldStyle(.roundedBorder)
+        }
     }
 
     private func settingCard<Content: View>(title: String, subtitle: String, icon: String, @ViewBuilder content: () -> Content) -> some View {
@@ -401,15 +555,16 @@ private struct HistoryRow: View {
     var body: some View {
         Button(action: onOpen) {
             HStack(spacing: 11) {
-                Image(systemName: item.state == "Failed" ? "exclamationmark.circle" : "waveform")
+                Image(systemName: item.state == "Failed" ? "exclamationmark.circle" : item.isMeeting ? "person.2.wave.2" : "waveform")
                     .font(.system(size: 14, weight: .medium))
                     .foregroundStyle(item.state == "Failed" ? Color.orange : Color.accentColor)
                     .frame(width: 32, height: 32)
                     .background(Color.accentColor.opacity(0.09), in: RoundedRectangle(cornerRadius: 10))
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(item.createdAt.formatted(date: .abbreviated, time: .shortened))
+                    Text(item.meeting.map { "Meeting · \($0.title) · \(item.createdAt.formatted(date: .abbreviated, time: .shortened))" } ?? item.createdAt.formatted(date: .abbreviated, time: .shortened))
                         .font(.caption2.weight(.medium))
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
                     Text(item.transcript.isEmpty ? (item.errorMessage ?? item.state) : item.transcript)
                         .font(.subheadline)
                         .lineLimit(1)
@@ -449,8 +604,11 @@ private struct RecordingWaveform: View {
 
 private struct HistoryDetailView: View {
     @EnvironmentObject private var state: AppState
+    @EnvironmentObject private var meetings: MeetingController
     @Environment(\.dismiss) private var dismiss
     let item: HistoryItem
+    /// Live copy, so meeting status updates (Slack upload) show while the sheet is open.
+    private var current: HistoryItem { state.entries.first { $0.id == item.id } ?? item }
     @State private var player: AVAudioPlayer?
     @State private var playbackTime = 0.0
     @State private var isPlaying = false
@@ -460,8 +618,15 @@ private struct HistoryDetailView: View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 4) {
+                    if let meeting = current.meeting {
+                        Label(meeting.title, systemImage: "person.2.wave.2").font(.headline)
+                        Text("\(meeting.source.rawValue.capitalized) meeting · \(meeting.hasSystemAudio ? "you + others" : "mic only")\(meeting.slackStatus.map { " · " + $0 } ?? "")")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                     Text(item.createdAt.formatted(date: .complete, time: .shortened))
-                        .font(.headline)
+                        .font(item.isMeeting ? .caption : .headline)
                     Text(item.state == "Failed" ? (item.errorMessage ?? "Transcription failed") : item.state)
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -495,6 +660,10 @@ private struct HistoryDetailView: View {
                     .buttonStyle(.bordered)
                     .disabled(!FileManager.default.fileExists(atPath: item.audioURL.path))
                 Spacer(minLength: 0)
+                if let meeting = current.meeting, current.state == "Ready", meeting.jsonFilename != nil, meeting.slackPosted != true {
+                    Button { meetings.retryUpload(current) } label: { Label("Send to Slack", systemImage: "paperplane") }
+                        .buttonStyle(.bordered)
+                }
                 if item.state == "Failed" {
                     Button { state.retry(item) } label: { Label("Retry", systemImage: "arrow.clockwise") }
                         .buttonStyle(.bordered)
